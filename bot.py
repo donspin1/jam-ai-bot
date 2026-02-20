@@ -19,7 +19,6 @@ from telegram.ext import (
     ConversationHandler
 )
 from fastapi import FastAPI, Request, Response
-import uvicorn
 import aiohttp
 from dotenv import load_dotenv
 
@@ -284,14 +283,33 @@ ptb.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения"""
-    # При запуске: устанавливаем вебхук и стартуем бота
-    webhook_url = f"{RENDER_URL}/webhook"
-    await ptb.bot.set_webhook(url=webhook_url)
-    logger.info(f"✅ Вебхук установлен на {webhook_url}")
+    # Проверяем, что URL доступен
+    if not RENDER_URL:
+        logger.error("❌ RENDER_URL не задан!")
+        yield
+        return
     
+    try:
+        # Сначала удаляем старый вебхук (на всякий случай)
+        await ptb.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Старый вебхук удалён")
+    except Exception as e:
+        logger.warning(f"⚠️ Не удалось удалить старый вебхук: {e}")
+    
+    # Устанавливаем новый вебхук
+    webhook_url = f"{RENDER_URL}/webhook"
+    try:
+        await ptb.bot.set_webhook(url=webhook_url)
+        logger.info(f"✅ Вебхук установлен на {webhook_url}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки вебхука: {e}")
+        yield
+        return
+    
+    # Запускаем бота
     async with ptb:
         await ptb.start()
-        logger.info("✅ Бот запущен")
+        logger.info("✅ Бот запущен и готов к работе!")
         yield
         await ptb.stop()
         logger.info("⏹️ Бот остановлен")
@@ -318,11 +336,8 @@ async def webhook(request: Request):
         logger.error(f"Ошибка обработки вебхука: {e}")
         return Response(status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
 
-# ========== ЗАПУСК (для локального тестирования) ==========
+# ========== ЗАПУСК ==========
 if __name__ == "__main__":
-    # Локально можно запустить через polling
-    logger.warning("⚠️ Локальный запуск в режиме polling (не для продакшена)")
-    asyncio.run(ptb.run_polling())
-else:
-    # На Render запускается через uvicorn
-    pass
+    import uvicorn
+    logger.warning("⚠️ Локальный запуск через uvicorn (режим разработки)")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
