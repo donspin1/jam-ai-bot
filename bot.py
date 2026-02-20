@@ -4,6 +4,8 @@ import logging
 from io import BytesIO
 import time
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+from http import HTTPStatus
 
 import google.generativeai as genai
 from PIL import Image
@@ -16,7 +18,8 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler
 )
-from aiohttp import web
+from fastapi import FastAPI, Request, Response
+import uvicorn
 import aiohttp
 from dotenv import load_dotenv
 
@@ -106,39 +109,21 @@ class RateLimitTracker:
 
 limit_tracker = RateLimitTracker()
 
-# ========== HTTP-СЕРВЕР ==========
-async def handle_health(request):
-    return web.Response(text="JAM AI Bot is alive! 🤖")
-
-async def start_http_server():
-    app = web.Application()
-    app.router.add_get("/", handle_health)
-    app.router.add_get("/health", handle_health)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logger.info(f"✅ HTTP сервер запущен на порту {PORT}")
-
-async def ping_self(context: ContextTypes.DEFAULT_TYPE):
-    if not RENDER_URL:
-        return
-    
-    url = f"{RENDER_URL.rstrip('/')}/health"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                logger.info(f"🔄 Самопинг {url} -> {resp.status}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка пинга: {e}")
+# ========== СОЗДАЕМ ПРИЛОЖЕНИЕ TELEGRAM BOT ==========
+ptb = (
+    Application.builder()
+    .updater(None)  # Важно: без встроенного апдейтера
+    .token(TELEGRAM_TOKEN)
+    .read_timeout(7)
+    .get_updates_read_timeout(42)
+    .build()
+)
 
 # ========== АВТОРИЗАЦИЯ ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
     user_id = update.effective_user.id
     
-    # Если пользователь уже авторизован
     if user_id in AUTHORIZED_USERS and AUTHORIZED_USERS[user_id]:
         limits_info = limit_tracker.get_limits_info()
         await update.message.reply_text(
@@ -149,7 +134,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     
-    # Если не авторизован - запрашиваем PIN-код
     await update.message.reply_text(
         "🔐 **JAM AI**\n\n"
         "Введи PIN-код для доступа:\n"
@@ -164,10 +148,7 @@ async def check_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text.strip()
     
     if user_input == PIN_CODE:
-        # Правильный PIN
         AUTHORIZED_USERS[user_id] = True
-        
-        # Удаляем сообщение с PIN-кодом
         await update.message.delete()
         
         limits_info = limit_tracker.get_limits_info()
@@ -182,9 +163,7 @@ async def check_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return ConversationHandler.END
     else:
-        # Неправильный PIN - удаляем сообщение и просим снова
         await update.message.delete()
-        
         await update.message.reply_text(
             "❌ **Неверный PIN-код!**\n\n"
             "Попробуйте еще раз:",
@@ -193,7 +172,6 @@ async def check_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return AUTH_STATE
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена ввода PIN-кода"""
     await update.message.reply_text(
         "🚫 Доступ отменен. Отправьте /start для начала работы."
     )
@@ -282,52 +260,69 @@ async def limits_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-# ========== ЗАПУСК ==========
-async def main():
-    await start_http_server()
-    
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    
-    # Создаем ConversationHandler для PIN-кода
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            AUTH_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_pin)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)]
-    )
-    
-    application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("help", lambda u,c: u.message.reply_text(
-        "🤖 **JAM AI - Помощь**\n\n"
-        "/start - Начать работу\n"
-        "/help - Показать это сообщение\n"
-        "/limits - Показать текущие лимиты\n"
-        "/cancel - Отменить ввод PIN-кода\n\n"
-        "**Как использовать:**\n"
-        "📝 Текст: просто отправь сообщение\n"
-        "🖼️ Анализ фото: отправь фото с вопросом",
-        parse_mode="Markdown")))
-    application.add_handler(CommandHandler("limits", limits_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    
-    # Самопинг с проверкой
-    if RENDER_URL:
-        if application.job_queue:
-            application.job_queue.run_repeating(ping_self, interval=600, first=10)
-            logger.info("✅ Самопинг активирован")
-        else:
-            logger.warning("⚠️ JobQueue не доступен, самопинг не работает")
-    
-    logger.info("✅ Бот JAM AI запущен и готов к работе!")
-    
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-    
-    while True:
-        await asyncio.sleep(3600)
+# ========== НАСТРОЙКА ОБРАБОТЧИКОВ ==========
+ptb.add_handler(ConversationHandler(
+    entry_points=[CommandHandler("start", start)],
+    states={AUTH_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_pin)]},
+    fallbacks=[CommandHandler("cancel", cancel)]
+))
+ptb.add_handler(CommandHandler("help", lambda u,c: u.message.reply_text(
+    "🤖 **JAM AI - Помощь**\n\n"
+    "/start - Начать работу\n"
+    "/help - Показать это сообщение\n"
+    "/limits - Показать текущие лимиты\n"
+    "/cancel - Отменить ввод PIN-кода\n\n"
+    "**Как использовать:**\n"
+    "📝 Текст: просто отправь сообщение\n"
+    "🖼️ Анализ фото: отправь фото с вопросом",
+    parse_mode="Markdown")))
+ptb.add_handler(CommandHandler("limits", limits_command))
+ptb.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+ptb.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 
+# ========== НАСТРОЙКА FASTAPI ==========
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Управление жизненным циклом приложения"""
+    # При запуске: устанавливаем вебхук и стартуем бота
+    webhook_url = f"{RENDER_URL}/webhook"
+    await ptb.bot.set_webhook(url=webhook_url)
+    logger.info(f"✅ Вебхук установлен на {webhook_url}")
+    
+    async with ptb:
+        await ptb.start()
+        logger.info("✅ Бот запущен")
+        yield
+        await ptb.stop()
+        logger.info("⏹️ Бот остановлен")
+
+# Создаем FastAPI приложение
+app = FastAPI(lifespan=lifespan)
+
+# Эндпоинт для проверки здоровья (нужен Render)
+@app.get("/")
+@app.get("/health")
+async def health():
+    return {"status": "ok", "message": "JAM AI Bot is alive! 🤖"}
+
+# Эндпоинт для вебхука Telegram
+@app.post("/webhook")
+async def webhook(request: Request):
+    """Принимает обновления от Telegram"""
+    try:
+        req = await request.json()
+        update = Update.de_json(req, ptb.bot)
+        await ptb.process_update(update)
+        return Response(status_code=HTTPStatus.OK)
+    except Exception as e:
+        logger.error(f"Ошибка обработки вебхука: {e}")
+        return Response(status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
+
+# ========== ЗАПУСК (для локального тестирования) ==========
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Локально можно запустить через polling
+    logger.warning("⚠️ Локальный запуск в режиме polling (не для продакшена)")
+    asyncio.run(ptb.run_polling())
+else:
+    # На Render запускается через uvicorn
+    pass
