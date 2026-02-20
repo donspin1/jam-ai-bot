@@ -316,8 +316,11 @@ async def main():
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
     if RENDER_URL:
+    if application.job_queue:
         application.job_queue.run_repeating(ping_self, interval=600, first=10)
         logger.info("✅ Самопинг активирован")
+    else:
+        logger.warning("⚠️ JobQueue не доступен, самопинг не работает")
     
     logger.info("✅ Бот JAM AI запущен и готов к работе!")
     
