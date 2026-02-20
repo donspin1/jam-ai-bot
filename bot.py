@@ -152,8 +152,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если не авторизован - запрашиваем PIN-код
     await update.message.reply_text(
         "🔐 **JAM AI**\n\n"
-        "PIN-код введи, а то мало ли левый чувак какой-то)\n"
-        "_(Не ссы, PIN-код удалю как отправишь сразу же!)_",
+        "Введи PIN-код для доступа:\n"
+        "_(сообщение будет автоматически удалено после ввода)_",
         parse_mode="Markdown"
     )
     return AUTH_STATE
@@ -172,9 +172,8 @@ async def check_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         limits_info = limit_tracker.get_limits_info()
         await update.message.reply_text(
-            "✅ **Ну свои получается! 😎**\n\n"
-            "Используй 👉 **JAM AI**!\n\n"
-            "Вот что умеет ботяра:\n"
+            "✅ **Добро пожаловать в JAM AI!**\n\n"
+            "Я умею:\n"
             "📝 Отвечать на текстовые запросы\n"
             "🖼️ Анализировать фото\n"
             "📊 /limits - показать лимиты" +
@@ -209,7 +208,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_message = update.message.text
     
     if not is_authorized(user_id):
-        # Если не авторизован
         await update.message.reply_text(
             "🔐 **Требуется авторизация!**\n"
             "Отправьте /start для ввода PIN-кода.",
@@ -217,7 +215,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Обычный текстовый запрос
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
     try:
@@ -315,12 +312,15 @@ async def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     
+    # Самопинг с проверкой
     if RENDER_URL:
-    if application.job_queue:
-        application.job_queue.run_repeating(ping_self, interval=600, first=10)
-        logger.info("✅ Самопинг активирован")
-    else:
-        logger.warning("⚠️ JobQueue не доступен, самопинг отключён. Убедись, что установлен python-telegram-bot[job-queue]")
+        if application.job_queue:
+            application.job_queue.run_repeating(ping_self, interval=600, first=10)
+            logger.info("✅ Самопинг активирован")
+        else:
+            logger.warning("⚠️ JobQueue не доступен, самопинг не работает")
+    
+    logger.info("✅ Бот JAM AI запущен и готов к работе!")
     
     await application.initialize()
     await application.start()
