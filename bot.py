@@ -320,9 +320,7 @@ async def main():
         application.job_queue.run_repeating(ping_self, interval=600, first=10)
         logger.info("✅ Самопинг активирован")
     else:
-        logger.warning("⚠️ JobQueue не доступен, самопинг не работает")
-    
-    logger.info("✅ Бот JAM AI запущен и готов к работе!")
+        logger.warning("⚠️ JobQueue не доступен, самопинг отключён. Убедись, что установлен python-telegram-bot[job-queue]")
     
     await application.initialize()
     await application.start()
